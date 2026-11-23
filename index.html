@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FC LAW release passkey - TEST</title>
+<style>
+  :root { --bg:#f7f6f3; --panel:#fff; --text:#1d1d1b; --soft:#5f5f5a; --line:#dcdad3; --accent:#1f3a5f; --good:#1e7b3c; --bad:#b3261e; --warn:#8a5a00; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 680px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 1.35rem; margin: 0 0 6px; }
+  h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  p { margin: 6px 0; }
+  .test { background:#fff4d6; border:1px solid #e8c766; color:#5a3d00; padding:10px 12px; border-radius:8px; margin:12px 0 16px; font-size:.95rem; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin:12px 0; }
+  button { font:inherit; font-weight:600; border:0; border-radius:8px; padding:12px 16px; background:var(--accent); color:#fff; width:100%; margin-top:8px; cursor:pointer; }
+  button.secondary { background:#e8e6df; color:var(--text); }
+  button:disabled { opacity:.45; cursor:default; }
+  pre { background:#f1f0ec; border:1px solid var(--line); border-radius:8px; padding:10px; overflow-x:auto; font:12.5px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; word-break:break-all; margin:8px 0 0; }
+  .status { font-size:.92rem; color:var(--soft); margin-top:8px; min-height:1.2em; }
+  .verdict { font-size:1.6rem; font-weight:800; text-align:center; padding:12px; border-radius:8px; margin-top:10px; }
+  .verdict.pass { background:#e3f3e8; color:var(--good); }
+  .verdict.fail { background:#fbe5e3; color:var(--bad); }
+  ul.checks { list-style:none; padding:0; margin:10px 0 0; font-size:.93rem; }
+  ul.checks li { padding:4px 0; border-bottom:1px solid var(--line); display:flex; gap:8px; }
+  ul.checks li b { min-width:3.2em; }
+  ul.checks li.ok b { color:var(--good); } ul.checks li.no b { color:var(--bad); }
+  .small { font-size:.85rem; color:var(--soft); }
+  .row { display:flex; gap:8px; } .row button { flex:1; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Release passkey: proof on your phone</h1>
+  <p class="small">FC LAW, PLLC &middot; D-464 test &middot; nothing here is a real release</p>
+  <div class="test"><b>TEST ONLY.</b> The passkey you make here is throwaway. It is tied to this test address (<span id="host"></span>) and works nowhere else. It cannot release any firm document. Delete it from your phone's password list when you are done (it is named "FC LAW release TEST").</div>
+
+  <div class="card">
+    <h2>1. Make a test passkey</h2>
+    <p>Your phone asks for your fingerprint or face. Fingerprint is required (user verification).</p>
+    <button id="btnReg">Create test passkey</button>
+    <div class="status" id="regStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>2. Approve a sample release</h2>
+    <p>This is the statement you would approve. The phone signs its SHA-256 fingerprint.</p>
+    <pre id="stmt"></pre>
+    <p class="small">Fingerprint (challenge): <span id="chal"></span></p>
+    <button id="btnSign" disabled>Approve with fingerprint</button>
+    <div class="status" id="signStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>3. Check it</h2>
+    <p>Your browser checks the signature the same way the plugin gate will.</p>
+    <div id="verdict"></div>
+    <ul class="checks" id="checks"></ul>
+    <div class="row"><button class="secondary" id="btnTamper" disabled>Try a changed document</button></div>
+    <div class="status" id="tamperStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>Release record</h2>
+    <p class="small">What the gate receives. The public key part goes in the plugin's trust file; the private key never leaves your phone.</p>
+    <pre id="record">(sign first)</pre>
+    <button class="secondary" id="btnCopy" disabled>Copy record</button>
+    <div class="status" id="copyStatus"></div>
+  </div>
+  <p class="small">Prepared by Viktor for Michael Franks &middot; 22 Nov 2026 &middot; no external scripts; all checks run on this page.</p>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder();
+const KEY = "fclaw-release-test-cred-v1";
+const b64u = (buf) => { const b = new Uint8Array(buf); let s = ""; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); };
+const unb64u = (s) => { s = s.replace(/-/g,"+").replace(/_/g,"/"); while (s.length % 4) s += "="; const bin = atob(s); const out = new Uint8Array(bin.length); for (let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i); return out; };
+const hex = (buf) => Array.from(new Uint8Array(buf), (x) => x.toString(16).padStart(2,"0")).join("");
+const sha256 = async (data) => new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+const concat = (...arrs) => { const n = arrs.reduce((a,b)=>a+b.length,0); const o = new Uint8Array(n); let i=0; for (const a of arrs) { o.set(a,i); i+=a.length; } return o; };
+const eq = (a,b) => a.length===b.length && a.every((x,i)=>x===b[i]);
+
+$("host").textContent = location.host;
+
+// ---- minimal CBOR decoder (fallback when getPublicKey() is unavailable) ----
+function cbor(buf) {
+  let p = 0;
+  const len = (ai) => { if (ai<24) return ai; if (ai===24) return buf[p++]; if (ai===25){const v=(buf[p]<<8)|buf[p+1];p+=2;return v;} if (ai===26){const v=((buf[p]<<24)>>>0)+(buf[p+1]<<16)+(buf[p+2]<<8)+buf[p+3];p+=4;return v;} throw new Error("CBOR length"); };
+  const item = () => { const b = buf[p++], mt = b>>5, ai = b&31; const n = len(ai);
+    switch (mt) { case 0: return n; case 1: return -1-n;
+      case 2: { const v = buf.slice(p,p+n); p+=n; return v; }
+      case 3: { const v = new TextDecoder().decode(buf.slice(p,p+n)); p+=n; return v; }
+      case 4: { const a=[]; for(let i=0;i<n;i++) a.push(item()); return a; }
+      case 5: { const m=new Map(); for(let i=0;i<n;i++){ const k=item(); m.set(k,item()); } return m; }
+      default: throw new Error("CBOR type " + mt); } };
+  return item();
+}
+function coseFromAuthData(ad) {
+  // rpIdHash 32 | flags 1 | count 4 | aaguid 16 | credIdLen 2 | credId | COSE key
+  const l = (ad[53]<<8)|ad[54];
+  const cose = cbor(ad.slice(55 + l));
+  if (cose.get(3) !== -7 || cose.get(-1) !== 1) throw new Error("not an ES256 P-256 key");
+  return { kty:"EC", crv:"P-256", x:b64u(cose.get(-2)), y:b64u(cose.get(-3)), ext:true };
+}
+
+// ---- 1. register ----
+$("btnReg").onclick = async () => {
+  $("regStatus").textContent = "Waiting for your phone...";
+  try {
+    if (!window.PublicKeyCredential) throw new Error("This browser has no passkey support. Open the link in Safari or Chrome.");
+    const cred = await navigator.credentials.create({ publicKey: {
+      rp: { name: "FC LAW release TEST", id: location.hostname },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "fclaw-release-test", displayName: "FC LAW release TEST (throwaway)" },
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+      authenticatorSelection: { authenticatorAttachment: "platform", residentKey: "preferred", userVerification: "required" },
+      attestation: "none", timeout: 120000 } });
+    const r = cred.response;
+    let pub;
+    const spki = r.getPublicKey ? r.getPublicKey() : null;
+    if (spki) pub = { publicKeySpki: b64u(spki) };
+    else { const ao = cbor(new Uint8Array(r.attestationObject)); pub = { publicKeyJwk: coseFromAuthData(ao.get("authData")) }; }
+    if (r.getPublicKeyAlgorithm && r.getPublicKeyAlgorithm() !== -7) throw new Error("Phone made a non-ES256 key");
+    const ad = new Uint8Array(r.getAuthenticatorData ? r.getAuthenticatorData() : cbor(new Uint8Array(r.attestationObject)).get("authData"));
+    const uv = !!(ad[32] & 4);
+    const enrolled = Object.assign({ credentialId: cred.id, alg: -7, rpId: location.hostname, origin: location.origin,
+      enrolledAt: new Date().toISOString().replace(/\.\d+Z$/,"Z"), backupEligible: !!(ad[32] & 8) }, pub);
+    localStorage.setItem(KEY, JSON.stringify(enrolled));
+    $("regStatus").textContent = "Test passkey made" + (uv ? " with fingerprint." : " (warning: no fingerprint flag).") + (enrolled.backupEligible ? " It syncs to your other devices." : "");
+    $("btnSign").disabled = false;
+  } catch (e) { $("regStatus").textContent = "Not made: " + (e.message || e); }
+};
+
+// ---- 2. sample statement (invented test values only) ----
+let statement = "";
+async function makeStatement() {
+  const fake = async (s) => hex(await sha256(enc.encode(s)));
+  const verdicts = [
+    "citation-checker clean " + await fake("sample report 1"),
+    "docket-verifier confirmed " + await fake("sample report 2"),
+  ].sort();
+  statement = [
+    "FC LAW RELEASE v1",
+    "role: principal-attorney",
+    "matter: 2600999",
+    "document: SAMPLE Final Order (test only).docx",
+    "content-sha256: " + await fake("sample document bytes"),
+    ...verdicts.map((v) => "verdict: " + v),
+    "issued-at: " + new Date().toISOString().replace(/\.\d+Z$/,"Z"),
+    "nonce: " + hex(crypto.getRandomValues(new Uint8Array(16))),
+  ].join("\n");
+  $("stmt").textContent = statement;
+  $("chal").textContent = hex(await sha256(enc.encode(statement))).slice(0,16) + "...";
+}
+
+// ---- 3. verify (same checks as verify_release.js) ----
+function derToRaw(der) {
+  // SEQUENCE { INTEGER r, INTEGER s } -> r||s, 32 bytes each
+  let p = 2; if (der[1] & 0x80) p = 2 + (der[1] & 0x7f);
+  const int = () => { if (der[p++] !== 2) throw new Error("bad DER"); const n = der[p++]; let v = der.slice(p, p+n); p += n;
+    while (v.length > 32 && v[0] === 0) v = v.slice(1); const o = new Uint8Array(32); o.set(v, 32 - v.length); return o; };
+  const r = int(), s = int(); return concat(r, s);
+}
+async function verify(record, enrolled, expectedStatement) {
+  const checks = []; const add = (ok, what) => { checks.push({ ok, what }); return ok; };
+  try {
+    add(record.credentialId === enrolled.credentialId, "Signed by the enrolled test passkey");
+    add(record.statement === expectedStatement, "Statement matches the document being released");
+    const cdjBytes = unb64u(record.clientDataJSON);
+    const cd = JSON.parse(new TextDecoder().decode(cdjBytes));
+    add(cd.type === "webauthn.get", "Ceremony type is webauthn.get");
+    add(cd.origin === enrolled.origin, "Origin is " + enrolled.origin);
+    add(cd.crossOrigin !== true, "Not signed inside another site's frame");
+    add(eq(unb64u(cd.challenge), await sha256(enc.encode(record.statement))), "Challenge = SHA-256 of the statement");
+    const ad = unb64u(record.authenticatorData);
+    add(eq(ad.slice(0,32), await sha256(enc.encode(enrolled.rpId))), "rpId hash is " + enrolled.rpId);
+    add(!!(ad[32] & 1), "User present (tap)");
+    add(!!(ad[32] & 4), "User verified (fingerprint/face)");
+    const count = ((ad[33]<<24)>>>0) + (ad[34]<<16) + (ad[35]<<8) + ad[36];
+    const key = enrolled.publicKeySpki
+      ? await crypto.subtle.importKey("spki", unb64u(enrolled.publicKeySpki), { name:"ECDSA", namedCurve:"P-256" }, false, ["verify"])
+      : await crypto.subtle.importKey("jwk", enrolled.publicKeyJwk, { name:"ECDSA", namedCurve:"P-256" }, false, ["verify"]);
+    const signed = concat(ad, await sha256(cdjBytes));
+    const good = await crypto.subtle.verify({ name:"ECDSA", hash:"SHA-256" }, key, derToRaw(unb64u(record.signature)), signed);
+    add(good, "ES256 signature verifies with the enrolled public key");
+    checks.push({ ok: null, what: "Signature counter: " + count + (count === 0 ? " (synced passkey; not relied on)" : "") });
+  } catch (e) { add(false, "Malformed record: " + e.message); }
+  return { ok: checks.every((c) => c.ok !== false), checks };
+}
+function show(res) {
+  $("verdict").innerHTML = '<div class="verdict ' + (res.ok ? "pass" : "fail") + '">' + (res.ok ? "PASS" : "FAIL") + "</div>";
+  $("checks").innerHTML = res.checks.map((c) => '<li class="' + (c.ok === false ? "no" : "ok") + '"><b>' + (c.ok === null ? "note" : c.ok ? "pass" : "FAIL") + "</b><span>" + c.what.replace(/</g,"&lt;") + "</span></li>").join("");
+}
+
+let lastRecord = null;
+$("btnSign").onclick = async () => {
+  $("signStatus").textContent = "Waiting for your fingerprint...";
+  try {
+    const enrolled = JSON.parse(localStorage.getItem(KEY) || "null");
+    if (!enrolled) throw new Error("make the test passkey first");
+    const a = await navigator.credentials.get({ publicKey: {
+      challenge: await sha256(enc.encode(statement)), rpId: location.hostname,
+      allowCredentials: [{ type: "public-key", id: unb64u(enrolled.credentialId) }],
+      userVerification: "required", timeout: 120000 } });
+    const r = a.response;
+    lastRecord = { v: 1, statement, credentialId: a.id, authenticatorData: b64u(r.authenticatorData),
+      clientDataJSON: b64u(r.clientDataJSON), signature: b64u(r.signature) };
+    $("signStatus").textContent = "Signed.";
+    show(await verify(lastRecord, enrolled, statement));
+    const approverEntry = Object.assign({}, enrolled); delete approverEntry.backupEligible;
+    $("record").textContent = JSON.stringify({ release_record: lastRecord, test_approver_entry: approverEntry,
+      user_agent: navigator.userAgent }, null, 2);
+    $("btnCopy").disabled = false; $("btnTamper").disabled = false;
+  } catch (e) { $("signStatus").textContent = "Not signed: " + (e.message || e); }
+};
+$("btnTamper").onclick = async () => {
+  const enrolled = JSON.parse(localStorage.getItem(KEY));
+  const changed = Object.assign({}, lastRecord, { statement: lastRecord.statement.replace(/content-sha256: [0-9a-f]{4}/, "content-sha256: 0000") });
+  const res = await verify(changed, enrolled, changed.statement);
+  show(res);
+  $("tamperStatus").textContent = res.ok ? "Unexpected: a changed document passed." : "As expected: the same signature fails for a changed document. Tap Approve again to re-sign.";
+};
+$("btnCopy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("record").textContent); $("copyStatus").textContent = "Copied. Paste it into the Viktor chat."; }
+  catch (e) { const r = document.createRange(); r.selectNodeContents($("record")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); $("copyStatus").textContent = "Selected; use Copy from the menu."; }
+};
+
+makeStatement();
+if (localStorage.getItem(KEY)) { $("btnSign").disabled = false; $("regStatus").textContent = "A test passkey from an earlier visit is ready on this browser."; }
+</script>
+</body>
+</html>
