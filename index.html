@@ -34,7 +34,7 @@
 <main>
   <h1>Release approval</h1>
   <p class="small">FC LAW, PLLC &middot; Principal Attorney only</p>
-  <div class="notice">Use only <b>https://approve.law.frankscapital.com</b>. Compare the matter, document, full hash and checker verdicts below with the request before approving. Enrollment alone does not authorize releases; its public key needs a separate approved plugin PR. <span id="host"></span></div>
+  <div class="notice">Use only <b>https://approve.law.frankscapital.com</b>. Compare the matter, document, full hash and checker verdicts (or waived checkers and override reason) below with the request before approving. Enrollment alone does not authorize releases; its public key needs a separate approved plugin PR. <span id="host"></span></div>
 
   <div class="card">
     <h2>1. Enroll a passkey</h2>
@@ -164,8 +164,19 @@ async function loadStatement() {
         !/^content-sha256: [0-9a-f]{64}$/.test(lines[4]) ||
         !/^issued-at: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(lines.at(-2)) ||
         !/^nonce: [0-9a-f]{32}$/.test(lines.at(-1))) throw new Error("Malformed release request.");
-    const verdicts = lines.slice(5, -2);
-    if (!verdicts.length || verdicts.some(v => !/^verdict: [a-z0-9-]+ [a-z-]+ [0-9a-f]{64}$/.test(v)) ||
+    let verdicts = lines.slice(5, -2);
+    if (verdicts[0] === "type: override") {
+      const extra = verdicts;
+      if (!/^kind: (engagement-letter|court-filing|deadline)$/.test(extra[1]) ||
+          !/^reason: \S.{8,998}\S$/.test(extra.at(-1))) throw new Error("Malformed override kind/reason.");
+      const waived = extra.slice(2, -1);
+      const allowed = { "engagement-letter": ["engagement-figures-verifier"], "court-filing": ["authority-verifier", "filing-readiness-checker"], deadline: ["docket-verifier"] }[extra[1].slice(6)];
+      if (!waived.length || new Set(waived).size !== waived.length ||
+          waived.some(w => !allowed.includes(w.slice(8)) || !w.startsWith("waived: ")) ||
+          JSON.stringify(waived) !== JSON.stringify([...waived].sort())) throw new Error("Malformed waived checkers.");
+      verdicts = []; // an override explicitly waives checks; it must not masquerade as a clean verdict
+    }
+    if ((!verdicts.length && !lines.includes("type: override")) || verdicts.some(v => !/^verdict: [a-z0-9-]+ [a-z-]+(?:%20[a-z-]+)* [0-9a-f]{64}$/.test(v)) ||
         JSON.stringify(verdicts) !== JSON.stringify([...verdicts].sort())) throw new Error("Malformed checker verdicts.");
     statement = text;
     $("stmt").textContent = statement;
