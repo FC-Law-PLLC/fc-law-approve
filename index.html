@@ -28,6 +28,7 @@
   ul.checks li.ok b { color:var(--good); } ul.checks li.no b { color:var(--bad); }
   .small { font-size:.85rem; color:var(--soft); }
   .row { display:flex; gap:8px; } .row button { flex:1; }
+  textarea { width:100%; min-height:7em; font:12.5px/1.4 ui-monospace, Menlo, Consolas, monospace; border:1px solid var(--line); border-radius:8px; padding:10px; margin-top:8px; }
 </style>
 </head>
 <body>
@@ -46,6 +47,12 @@
   <div class="card">
     <h2>2. Review and approve</h2>
     <p>The phone signs the exact statement shown here. No request loaded means no approval.</p>
+    <details id="pasteBox">
+      <summary>Paste request</summary>
+      <p class="small">If the link opened with no request, paste the request block (or the whole approval link) here. It stays on this phone; nothing is sent anywhere.</p>
+      <textarea id="paste" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Paste request"></textarea>
+      <button class="secondary" id="btnPaste">Load pasted request</button>
+    </details>
     <pre id="stmt"></pre>
     <p class="small">Fingerprint (challenge): <span id="chal"></span></p>
     <button id="btnSign" disabled>Approve with passkey</button>
@@ -150,13 +157,27 @@ function showEnrollment(enrolled) {
 }
 
 // ---- 2. explicit request: URL fragment = encodeURIComponent(canonical statement) ----
-// Never use a query string: fragments are not sent in HTTP requests.
+// Never use a query string: fragments are not sent in HTTP requests. In-app browsers can
+// drop the fragment, so the same statement may be pasted instead (raw text, the copy-ready
+// block, or the full approval link). Either way the identical bytes are validated and signed.
 let statement = "";
-async function loadStatement() {
+const PAGE = "https://approve.law.frankscapital.com";
+function requestFromPaste(raw) {
+  let t = String(raw || "").replace(/\r\n?/g, "\n").trim();
+  if (/^https?:\/\//i.test(t)) {
+    t = t.replace(/\s+/g, ""); // a link may wrap when pasted; the encoded statement has no whitespace
+    if (!/^https:\/\/approve\.law\.frankscapital\.com\/?#/.test(t)) throw new Error("Pasted link is not for " + PAGE + ".");
+    return decodeURIComponent(t.slice(t.indexOf("#") + 1));
+  }
+  const lines = t.split("\n");
+  if (lines[0] === "-----BEGIN FC LAW REQUEST-----" && lines.at(-1) === "-----END FC LAW REQUEST-----") t = lines.slice(1, -1).join("\n");
+  return t;
+}
+async function loadStatement(pasted) {
   try {
     if (location.origin !== "https://approve.law.frankscapital.com") throw new Error("Wrong host. Open https://approve.law.frankscapital.com.");
-    const text = decodeURIComponent(location.hash.slice(1));
-    if (!text) { $("stmt").textContent = "No release request loaded. Enrollment is available above."; return; }
+    const text = pasted === undefined ? decodeURIComponent(location.hash.slice(1)) : requestFromPaste(pasted);
+    if (!text) { statement = ""; $("btnSign").disabled = true; $("stmt").textContent = "No release request loaded. Tap Paste request above, or open the approval link in Safari or Chrome. Enrollment is available above."; return; }
     const lines = text.split("\n");
     if (text.includes("\r") || text !== text.normalize("NFC") || lines.length < 8 ||
         lines[0] !== "FC LAW RELEASE v1" || lines[1] !== "role: principal-attorney" ||
@@ -176,7 +197,8 @@ async function loadStatement() {
           JSON.stringify(waived) !== JSON.stringify([...waived].sort())) throw new Error("Malformed waived checkers.");
       verdicts = []; // an override explicitly waives checks; it must not masquerade as a clean verdict
     }
-    if ((!verdicts.length && !lines.includes("type: override")) || verdicts.some(v => !/^verdict: [a-z0-9-]+ [a-z-]+(?:%20[a-z-]+)* [0-9a-f]{64}$/.test(v)) ||
+    if (verdicts.some(v => v.includes("%"))) throw new Error("Malformed checker verdicts: this request uses the retired %20 spelling. Ask for a new request.");
+    if ((!verdicts.length && !lines.includes("type: override")) || verdicts.some(v => !/^verdict: [a-z0-9-]+ [a-z-]+(?: [a-z-]+)* [0-9a-f]{64}$/.test(v)) ||
         JSON.stringify(verdicts) !== JSON.stringify([...verdicts].sort())) throw new Error("Malformed checker verdicts.");
     statement = text;
     $("stmt").textContent = statement;
@@ -259,6 +281,10 @@ $("btnTamper").onclick = async () => {
   const res = await verify(changed, enrolled, changed.statement);
   show(res);
   $("tamperStatus").textContent = res.ok ? "Unexpected: a changed document passed." : "As expected: the same signature fails for a changed document. Tap Approve again to re-sign.";
+};
+$("btnPaste").onclick = async () => {
+  await loadStatement($("paste").value);
+  $("signStatus").textContent = statement ? "Pasted request loaded. Check every field before approving." : "";
 };
 $("btnCopy").onclick = async () => {
   try { await navigator.clipboard.writeText($("record").textContent); $("copyStatus").textContent = "Copied. Paste it into the requesting firm session."; }
