@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://*.viktor.com; img-src 'none'; base-uri 'none'; form-action 'none'">
 <title>FC LAW release</title>
 <style>
   :root { --bg:#F5F4F4; --panel:#fff; --text:#191919; --soft:#191919; --line:#E2E1E1; --accent:#191919; --good:#191919; --bad:#191919; --warn:#191919; }
@@ -49,7 +50,7 @@
     <p>The phone signs the exact statement shown here. No request loaded means no approval.</p>
     <details id="pasteBox">
       <summary>Paste request</summary>
-      <p class="small">If the link opened with no request, paste the request block (or the whole approval link) here. It stays on this phone; nothing is sent anywhere.</p>
+      <p class="small">If the link opened with no request, paste the request block (or the whole approval link) here. It is checked on this phone; the paste itself is not sent anywhere.</p>
       <textarea id="paste" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Paste request"></textarea>
       <button class="secondary" id="btnPaste">Load pasted request</button>
     </details>
@@ -74,11 +75,16 @@
     <pre id="record">(enroll or sign first)</pre>
     <button class="secondary" id="btnCopy" disabled>Copy record</button>
     <div class="status" id="copyStatus"></div>
+    <div class="status" id="sendStatus"></div>
   </div>
-  <p class="small">No external scripts or network requests. The private key stays with your authenticator.</p>
+  <p class="small">No external scripts or telemetry. The only network request is the signed record, sent after you approve to the firm's return address when one is configured. The private key stays with your authenticator.</p>
 </main>
 <script>
 "use strict";
+// ---- Firm return URL (Principal Attorney sets this when uploading the page) ----
+// Paste the tokenized firm webhook URL between the quotes. Empty = copy only (no network).
+// Only an https URL on a *.viktor.com host is used; anything else is refused.
+const RETURN_URL = "https://api.viktor.com/api/triggers/in/webhook/wh_l2cJKBno2jY9i1IUbr4lauiv?token=vtrtok_dKNZoaZAWERByRZ2Nus_rTm5SlgnhLHzfgpcdpZ-5kY";
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 const KEY = "fclaw-release-cred-v1";
@@ -273,8 +279,36 @@ $("btnSign").onclick = async () => {
     $("record").textContent = JSON.stringify({ release_record: lastRecord, approver_entry: approverEntry,
       user_agent: navigator.userAgent }, null, 2);
     $("btnCopy").disabled = false; $("btnTamper").disabled = false;
+    await sendToFirm($("record").textContent); // the exact text Copy copies
   } catch (e) { $("signStatus").textContent = "Not signed: " + (e.message || e); }
 };
+
+// ---- Auto-return: the signed record, and nothing else, to the configured firm URL ----
+// Transport only: the plugin verifies the passkey signature offline against its own trust
+// file, so a lost, repeated or forged delivery cannot approve anything. Copy always remains.
+function returnTarget(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { throw new Error("not a URL"); }
+  if (u.protocol !== "https:") throw new Error("not https");
+  if (u.username || u.password || u.port) throw new Error("credentials or port in the URL");
+  if (!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+viktor\.com$/.test(u.hostname)) throw new Error("host " + u.hostname + " is not a firm return host");
+  return u.href;
+}
+async function sendToFirm(text) {
+  if (!RETURN_URL) return false; // feature off: copy only, exactly as before
+  let target;
+  try { target = returnTarget(RETURN_URL); }
+  catch (e) { $("sendStatus").textContent = "Not sent: return URL refused (" + e.message + "). Use Copy."; return false; }
+  $("sendStatus").textContent = "Sending to the firm...";
+  try {
+    // Simple request (text/plain, no-cors): no preflight, opaque response. A resolved
+    // fetch means the request left the phone; a rejection means it did not.
+    await fetch(target, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" },
+      body: text, keepalive: true, credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer" });
+    $("sendStatus").textContent = "Sent to the firm";
+    return true;
+  } catch (e) { $("sendStatus").textContent = "Couldn't send - use Copy"; return false; }
+}
 $("btnTamper").onclick = async () => {
   const enrolled = JSON.parse(localStorage.getItem(KEY));
   const changed = Object.assign({}, lastRecord, { statement: lastRecord.statement.replace(/content-sha256: [0-9a-f]{4}/, "content-sha256: 0000") });
